@@ -11,13 +11,19 @@ st.write("Upload a CSV file with columns: `text`, `x`, `y`, `freq`")
 uploaded_file = st.file_uploader("Upload your CSV", type="csv")
 
 
-def scale_sizes_fixed(freq_series, min_size=4, max_size=30, freq_min=1, freq_max=3000):
+def scale_sizes_dynamic(freq_series, min_size=4, max_size=30, freq_min=1, freq_max=None):
     """
     Scale frequencies logarithmically to marker sizes.
-    Uses a fixed frequency range so visual scaling stays consistent across files.
+    Uses the maximum frequency from the data instead of a fixed max.
     """
     freq = pd.to_numeric(freq_series, errors="coerce").fillna(1)
-    freq = freq.clip(lower=freq_min, upper=freq_max)
+    freq = freq.clip(lower=freq_min)
+
+    if freq_max is None:
+        freq_max = freq.max()
+
+    freq_max = max(freq_max, freq_min)
+    freq = freq.clip(upper=freq_max)
 
     log_freq = np.log1p(freq)
     log_min = np.log1p(freq_min)
@@ -48,44 +54,67 @@ if uploaded_file is not None:
     df["y"] = pd.to_numeric(df["y"], errors="coerce")
     df["freq"] = pd.to_numeric(df["freq"], errors="coerce")
     df = df.dropna(subset=["x", "y", "freq"]).reset_index(drop=True)
-    df["freq"] = df["freq"].clip(lower=1)
+    df["freq"] = df["freq"].clip(lower=1).astype(int)
 
     if df.empty:
         st.warning("No valid rows remain after cleaning x, y, and freq.")
         st.stop()
 
+    # Determine max freq from data
+    data_freq_max = int(df["freq"].max())
+
     # Sidebar settings
     st.sidebar.header("Settings")
 
-    use_freq_size = st.sidebar.checkbox("Use frequency-based point size", value=True)
+    # User typed minimum freq filter
+    min_freq_size = st.sidebar.number_input(
+        "Minimum freq to show",
+        min_value=1,
+        max_value=data_freq_max,
+        value=1,
+        step=1
+    )
+
+    # Apply filter for plot
+    df_plot = df[df["freq"] >= min_freq_size].copy().reset_index(drop=True)
+
+    use_freq_size = st.sidebar.checkbox("Use frequency-based point size", value=False)
 
     if use_freq_size:
         min_marker_size = st.sidebar.slider("Minimum point size", 1, 15, 4)
-        max_marker_size = st.sidebar.slider("Maximum point size", 5, 50, 30)
-        df["marker_size"] = scale_sizes_fixed(
-            df["freq"],
+        max_marker_size = st.sidebar.slider("Maximum point size", 5, 50, 20)
+        df_plot["marker_size"] = scale_sizes_dynamic(
+            df_plot["freq"],
             min_size=min_marker_size,
             max_size=max_marker_size,
             freq_min=1,
-            freq_max=3000
+            freq_max=data_freq_max
         )
     else:
-        fixed_marker_size = st.sidebar.slider("Point size", 1, 30, 8)
-        df["marker_size"] = fixed_marker_size
+        fixed_marker_size = st.sidebar.slider("Point size", 1, 10, 4)
+        df_plot["marker_size"] = fixed_marker_size
 
-    marker_opacity = st.sidebar.slider("Opacity", 0.1, 1.0, 0.7)
+    marker_opacity = st.sidebar.slider("Opacity", 0.1, 1.0, 0.2)
     max_texts = st.sidebar.number_input("Maximum number of texts to display", 10, 10000, 500)
+
+    st.sidebar.caption(f"Total rows: {len(df)}")
+    st.sidebar.caption(f"Rows after freq filter: {len(df_plot)}")
+    st.sidebar.caption(f"Max freq in data: {data_freq_max}")
+
+    if df_plot.empty:
+        st.warning("No points remain after applying the frequency filter.")
+        st.stop()
 
     # Plot
     fig = go.Figure(
         go.Scattergl(
-            x=df["x"],
-            y=df["y"],
+            x=df_plot["x"],
+            y=df_plot["y"],
             mode="markers",
-            text=df["text"],
-            customdata=np.stack([df.index, df["freq"]], axis=-1),
+            text=df_plot["text"],
+            customdata=np.stack([df_plot.index, df_plot["freq"]], axis=-1),
             marker=dict(
-                size=df["marker_size"],
+                size=df_plot["marker_size"],
                 opacity=marker_opacity,
                 color="#1f77b4",
                 sizemode="diameter",
@@ -140,7 +169,7 @@ if uploaded_file is not None:
         st.subheader("Selection")
 
         if selected_indices:
-            selected_df = df.iloc[selected_indices]
+            selected_df = df_plot.iloc[selected_indices]
 
             st.success(f"{len(selected_df)} point(s) selected")
 
@@ -169,8 +198,11 @@ if uploaded_file is not None:
             st.info("Select points using lasso or box selection.")
 
     st.divider()
-    st.subheader("Data Preview")
-    st.dataframe(df[["text", "x", "y", "freq"]].head(20), use_container_width=True)
+    st.subheader("Data Preview (filtered)")
+    st.dataframe(df_plot[["text", "x", "y", "freq"]], use_container_width=True)
+
+    st.subheader("Data Preview (all)")
+    st.dataframe(df[["text", "x", "y", "freq"]], use_container_width=True)
 
 else:
     st.info("Please upload a CSV file first.")
